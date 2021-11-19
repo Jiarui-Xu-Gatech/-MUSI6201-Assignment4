@@ -124,11 +124,11 @@ def eval_tfe(pathToAudio, pathToGT):
             wav_fname=pathToAudio +'\\' +item
             fs, data = wavfile.read(wav_fname)
             tInHz=estimate_tuning_freq(data[:], blockSize, hopSize, fs)
-            audio=np.append(audio,tInHz)
+            audio=np.append(audio,convert_freq2midi(tInHz, 440))
             txt_path=pathToGT+'\\'+item[0:-4]+'.txt'
             txt=open(txt_path,'r')
             GT_one=float(txt.readline())
-            GT=np.append(GT,GT_one)
+            GT=np.append(GT,convert_freq2midi(GT_one, 440))
     return np.mean(np.abs(audio-GT))*100
 
             
