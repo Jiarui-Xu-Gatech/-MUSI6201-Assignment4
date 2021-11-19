@@ -8,22 +8,162 @@ from os.path import dirname, join as pjoin
 import os
 
 def get_spectral_peaks(X):
-    pass
+    top_k=20
+    arr = X
+    spectralPeaks=arr.argsort(axis=0)[::-1][0:top_k]
+    return spectralPeaks
+
+def  block_audio(x,blockSize,hopSize,fs):
+    # allocate memory
+    numBlocks = math.ceil(x.size / hopSize)
+    xb = np.zeros([numBlocks, blockSize])
+    # compute time stamps
+    t = (np.arange(0, numBlocks) * hopSize) / fs
+
+    x = np.concatenate((x, np.zeros(blockSize)),axis=0)
+
+    for n in range(0, numBlocks):
+        i_start = n * hopSize
+        i_stop = np.min([x.size - 1, i_start + blockSize - 1])
+
+        xb[n][np.arange(0,blockSize)] = x[np.arange(i_start, i_stop + 1)]
+
+    return (xb,t)
+
+def compute_spectrogram(xb, fs): 
+    k = np.arange(0,xb.shape[0])
+    hannWin = np.hanning(xb.shape[1])
+    xb = xb*hannWin
+    spectrums = np.abs(np.fft.fft(xb)[:,:xb.shape[1]//2+1])
+    X=spectrums.T
+    fInHz=np.fft.rfftfreq(X.shape[0], d=1./fs)
+    return X,fInHz
+
+
+def convert_freq2midi(fInHz, fA4InHz = 440):
+    def convert_freq2midi_scalar(f, fA4InHz):
+        return (69 + 12 * np.log2(f/fA4InHz))
+    fInHz = np.asarray(fInHz)
+    if fInHz.ndim == 0:
+       return convert_freq2midi_scalar(fInHz,fA4InHz)
+    midi = np.zeros(fInHz.shape)
+    fInHz[fInHz<=0]=2**(-69/12)*fA4InHz
+    for k,f in enumerate(fInHz):
+        midi[k] =  convert_freq2midi_scalar(f,fA4InHz)
+    return (midi)
 
 def estimate_tuning_freq(x, blockSize, hopSize, fs):
-    pass
+    xb,t=block_audio(x,blockSize,hopSize,fs)
+    X,fInHz=compute_spectrogram(xb, fs)
+    spectralPeaks=get_spectral_peaks(X)*fs/(2*(X.shape[0]))
+    midi=convert_freq2midi(spectralPeaks)
+    truth=np.around(midi)
+    deviation=np.around((midi-truth)*100).astype(int)#in cent
+    tuning_pitch=69+(np.argmax(np.bincount(deviation.reshape(1,-1)[0]+100))-100)/100
+    tInHz=(2**((tuning_pitch-69)/12))*440
+    return tInHz
+    
 
 def extract_pitch_chroma(X, fs, tfInHz):
-    pass
+    #48 83
+    spectralPeaks=get_spectral_peaks(X)
+    midi=convert_freq2midi(spectralPeaks,tfInHz)
+    midi[midi<48]=0
+    midi[midi>83]=0
+    pitchChroma=np.zeros((12,X.shape[1]))
+    for idx in range(12):
+        mask=(midi>0)
+        midi2=np.zeros(midi.shape)
+        midi3=np.around(midi)
+        midi3[midi3==0]=0.5
+        midi2[midi3%12==idx]=1
+        pitchChroma[idx]=np.sum(midi2,axis=0)
+    pitchChroma=pitchChroma.T
+    pitchChroma2=1/np.sqrt(np.sum(pitchChroma**2,axis=1))
+    pitchChroma2[pitchChroma2>1e8]=0
+    pitchChroma=pitchChroma.T
+    pitchChroma=pitchChroma*pitchChroma2
+    return pitchChroma
 
 def detect_key(x, blockSize, hopSize, fs, bTune):
-    pass
+    xb,t=block_audio(x,blockSize,hopSize,fs)
+    X,fInHz=compute_spectrogram(xb, fs)
+    t_pc = np.array([[6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],[6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]])
+    if bTune==True:
+        tInHz=estimate_tuning_freq(x, blockSize, hopSize, fs)
+    else:
+        tInHz=440
+    pitchChroma=extract_pitch_chroma(X, fs, tInHz)
+    t_pc[0]=t_pc[0]/np.sqrt(sum(t_pc[0]**2))
+    t_pc[1]=t_pc[1]/np.sqrt(sum(t_pc[1]**2))
+    distance=np.zeros(24)
+    for i in range(12):
+        new_t_pc_major=np.hstack((t_pc[0][12-i:12],t_pc[0][0:12-i]))/np.sqrt(np.sum(t_pc[0]**2))
+        new_t_pc_minor=np.hstack((t_pc[1][12-i:12],t_pc[1][0:12-i]))/np.sqrt(np.sum(t_pc[1]**2))
+        all_pitchChroma=np.sum(pitchChroma,axis=1)
+        distance[i]=np.sqrt(np.sum((all_pitchChroma/np.sqrt(np.sum(all_pitchChroma))-new_t_pc_major)**2))
+        distance[i+12]=np.sqrt(np.sum((all_pitchChroma/np.sqrt(np.sum(all_pitchChroma))-new_t_pc_minor)**2))
+    key=distance.argmin()
+    if key<=11 and key+3>11:
+        key=(key+3)%12
+    elif key+3>23:
+        key=key+3-12
+    else:
+        key=key+3
+    return key#because 0 represent A not C
+        
 
 def eval_tfe(pathToAudio, pathToGT):
-    pass
+    blockSize = 4096
+    hopSize = 2048
+    filenames=os.listdir(pathToAudio)
+    audio=np.array([])
+    GT=np.array([])
+    for item in filenames:
+        if item[-3:len(item)]=='wav':
+            wav_fname=pathToAudio +'\\' +item
+            fs, data = wavfile.read(wav_fname)
+            tInHz=estimate_tuning_freq(data[:], blockSize, hopSize, fs)
+            audio=np.append(audio,tInHz)
+            txt_path=pathToGT+'\\'+item[0:-4]+'.txt'
+            txt=open(txt_path,'r')
+            GT_one=float(txt.readline())
+            GT=np.append(GT,GT_one)
+    return np.mean(np.abs(audio-GT))*100
 
+            
+
+            
 def eval_key_detection(pathToAudio, pathToGT):
-    pass
+    blockSize = 4096
+    hopSize = 2048
+    filenames=os.listdir(pathToAudio)
+    accuracy1=0
+    accuracy2=0
+    GT=0
+    for item in filenames:
+        if item[-3:len(item)]=='wav':
+            wav_fname=pathToAudio +'\\' +item
+            fs, data = wavfile.read(wav_fname)
+            key1=detect_key(data[:], blockSize, hopSize, fs,True)
+            key2=detect_key(data[:], blockSize, hopSize, fs,False)
+            txt_path=pathToGT+'\\'+item[0:-4]+'.txt'
+            txt=open(txt_path,'r')
+            GT=int(txt.readline())
+            #print(GT)
+            #print(key1)
+            #print(key2)
+            if GT==key1:
+                accuracy1+=1
+            if GT==key2:
+                accuracy2+=1
+    return np.array([accuracy1/len(filenames),accuracy2/len(filenames)]).reshape(2,1)
 
 def evaluate(pathToAudioKey, pathToGTKey,pathToAudioTf, pathToGTTf):
-    pass
+    avg_deviationInCent = eval_tfe(pathToAudioTf, pathToGTTf)
+    print(avg_deviationInCent)
+    avg_accuracy = eval_key_detection(pathToAudioKey, pathToGTKey)
+    print(avg_accuracy)
+    return avg_accuracy, avg_deviationInCent
+
+evaluate('key_tf\\key_eval\\audio','key_tf\\key_eval\\GT','key_tf\\tuning_eval\\audio','key_tf\\tuning_eval\\GT')
