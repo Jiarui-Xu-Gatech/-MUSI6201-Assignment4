@@ -41,48 +41,59 @@ def compute_spectrogram(xb, fs):
 
 
 def convert_freq2midi(fInHz, fA4InHz = 440):
+    if type(fInHz)==np.ndarray:
+        original_shape=fInHz.shape
+        fInHz=np.squeeze(fInHz.reshape((1,-1)))
     def convert_freq2midi_scalar(f, fA4InHz):
-        return (69 + 12 * np.log2(f/fA4InHz))
+ 
+        if f <= 0:
+            return 0
+        else:
+            return (69 + 12 * np.log2(f/fA4InHz))
     fInHz = np.asarray(fInHz)
     if fInHz.ndim == 0:
        return convert_freq2midi_scalar(fInHz,fA4InHz)
     midi = np.zeros(fInHz.shape)
-    fInHz[fInHz<=0]=2**(-69/12)*fA4InHz
     for k,f in enumerate(fInHz):
         midi[k] =  convert_freq2midi_scalar(f,fA4InHz)
+
+    midi=midi.reshape(original_shape)     
     return (midi)
+
 
 def estimate_tuning_freq(x, blockSize, hopSize, fs):
     xb,t=block_audio(x,blockSize,hopSize,fs)
     X,fInHz=compute_spectrogram(xb, fs)
     spectralPeaks=get_spectral_peaks(X)*fs/(2*(X.shape[0]))
-    midi=convert_freq2midi(spectralPeaks)
-    truth=np.around(midi)
-    deviation=np.around((midi-truth)*100).astype(int)#in cent
-    tuning_pitch=69+(np.argmax(np.bincount(deviation.reshape(1,-1)[0]+100))-100)/100
+    midi=convert_freq2midi(spectralPeaks)*100
+    truth=np.round(midi)
+    deviation = midi.flatten() - truth.flatten()
+    #deviation=np.around(midi-truth).astype(int)#in cent
+    histogram = np.histogram(deviation)
+    tuning_pitch=69+histogram[1][np.argmax(histogram[0])]/100
+    #tuning_pitch=69+(np.argmax(np.bincount(deviation.reshape(1,-1)[0]+100))-100)/100
     tInHz=(2**((tuning_pitch-69)/12))*440
     return tInHz
     
 
-def extract_pitch_chroma(X, fs, tfInHz):
-    #48 83
-    spectralPeaks=get_spectral_peaks(X)
-    midi=convert_freq2midi(spectralPeaks,tfInHz)
-    midi[midi<48]=0
-    midi[midi>83]=0
-    pitchChroma=np.zeros((12,X.shape[1]))
-    for idx in range(12):
-        mask=(midi>0)
-        midi2=np.zeros(midi.shape)
-        midi3=np.around(midi)
-        midi3[midi3==0]=0.5
-        midi2[midi3%12==idx]=1
-        pitchChroma[idx]=np.sum(midi2,axis=0)
-    pitchChroma=pitchChroma.T
-    pitchChroma2=1/np.sqrt(np.sum(pitchChroma**2,axis=1))
-    pitchChroma2[pitchChroma2>1e8]=0
-    pitchChroma=pitchChroma.T
-    pitchChroma=pitchChroma*pitchChroma2
+def extract_pitch_chroma(X, fs, tInHz):
+    f_C3=tInHz*(2**(-21/12))
+    Octaves = 3
+    Octave_pitch = 12
+
+    coeff = np.zeros([Octave_pitch, X.shape[0]])
+    for i in range(0,Octave_pitch):
+        Look_freq=f_C3*(2**(i/Octave_pitch))
+        #down half of the semi-tone and up half of the semi-tone would be the range we look
+        OctaveBound=Look_freq* 2 * (X.shape[0] - 1) / fs*np.array([2**(-1 / (2 * Octave_pitch)), 2**(1 / (2 * Octave_pitch))])
+        #corresponds to a range within 3 octaves
+        for j in range(0,Octaves):
+            actual_Bound=np.array([np.around(OctaveBound[0]*(2**j)).astype(int),np.around(OctaveBound[1]*(2**j)).astype(int)])
+            coeff[i,actual_Bound[0]:actual_Bound[1]]=1/(actual_Bound[1]-actual_Bound[0])
+    pitchChroma=np.dot(coeff, X**2)
+    norm = np.sqrt((pitchChroma**2).sum(axis=0, keepdims=True))
+    norm[norm == 0] = 1
+    pitchChroma = pitchChroma / norm
     return pitchChroma
 
 def detect_key(x, blockSize, hopSize, fs, bTune):
