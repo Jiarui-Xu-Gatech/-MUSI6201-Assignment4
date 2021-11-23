@@ -65,14 +65,22 @@ def estimate_tuning_freq(x, blockSize, hopSize, fs):
     xb,t=block_audio(x,blockSize,hopSize,fs)
     X,fInHz=compute_spectrogram(xb, fs)
     spectralPeaks=get_spectral_peaks(X)*fs/(2*(X.shape[0]))
+    pitch_frequency=np.power(2,(np.arange(1,128)-69)/12)*440
+    pitch_corr=np.zeros(spectralPeaks.shape)
+    for i in range(spectralPeaks.shape[0]):
+        for j in range(spectralPeaks.shape[1]):
+            pitch_corr[i,j]=np.abs(pitch_frequency-spectralPeaks[i,j]).argmin()+1
+    freq_corr=np.power(2,(pitch_corr-69)/12)*440
+    deviation_Hz=spectralPeaks-freq_corr
+    tInHz=440+np.mean(deviation_Hz)
     midi=convert_freq2midi(spectralPeaks)*100
-    truth=np.round(midi)
+    truth=pitch_corr*100
     deviation = midi.flatten() - truth.flatten()
     #deviation=np.around(midi-truth).astype(int)#in cent
     histogram = np.histogram(deviation)
     tuning_pitch=69+histogram[1][np.argmax(histogram[0])]/100
     #tuning_pitch=69+(np.argmax(np.bincount(deviation.reshape(1,-1)[0]+100))-100)/100
-    tInHz=(2**((tuning_pitch-69)/12))*440
+    #tInHz=(2**((tuning_pitch-69)/12))*440
     return tInHz
     
 
